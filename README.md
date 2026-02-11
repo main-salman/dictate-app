@@ -8,6 +8,9 @@ Dictate is a local web application that provides high-quality speech-to-text fun
 
 This app was created to overcome limitations on work computers that block cloud-based dictation tools like SuperWhisper, Whisprflow and others, providing a superior alternative to the built-in macOS dictation.
 
+<img width="1498" height="1632" alt="image" src="https://github.com/user-attachments/assets/839bcf57-df12-41ed-8912-abb1dc514359" />
+
+
 ## Features
 
 - **Offline Privacy**: No audio data leaves your computer.
