@@ -31,20 +31,32 @@ def transcribe():
 
     audio_file = request.files["audio"]
     work_dir = tempfile.mkdtemp()
-    raw_path = os.path.join(work_dir, f"recording_{uuid.uuid4().hex}.webm")
+    ext = request.form.get("ext", "webm")
+    # sanitize extension to simple alnum to avoid surprises
+    ext = "".join(c for c in ext.lower() if c.isalnum()) or "webm"
+    raw_path = os.path.join(work_dir, f"recording_{uuid.uuid4().hex}.{ext}")
     wav_path = os.path.join(work_dir, "audio.wav")
 
     try:
         # Save uploaded audio
         audio_file.save(raw_path)
 
-        if os.path.getsize(raw_path) == 0:
+        file_size = os.path.getsize(raw_path)
+        if file_size == 0:
             return jsonify({"error": "Empty audio file"}), 400
+
+        # Quick sanity check: valid WebM starts with EBML magic bytes 1A 45 DF A3
+        with open(raw_path, 'rb') as f:
+            header = f.read(16)
+        header_hex = header.hex(' ')
+        app.logger.info(f"Audio file: {file_size} bytes, header: {header_hex}")
 
         # Convert to 16kHz WAV (whisper requirement)
         result = subprocess.run(
             [
-                FFMPEG, "-i", raw_path,
+                # Trim banner so real errors surface in API response
+                FFMPEG, "-hide_banner", "-loglevel", "error", "-nostdin",
+                "-i", raw_path,
                 "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
                 wav_path, "-y"
             ],
@@ -52,7 +64,8 @@ def transcribe():
         )
 
         if result.returncode != 0:
-            return jsonify({"error": f"Audio conversion failed: {result.stderr[:200]}"}), 500
+            error_msg = result.stderr.strip() or "Unknown ffmpeg error"
+            return jsonify({"error": f"Audio conversion failed: {error_msg[:800]}"}), 500
 
         if not os.path.exists(wav_path) or os.path.getsize(wav_path) == 0:
             return jsonify({"error": "Audio conversion produced empty file"}), 500

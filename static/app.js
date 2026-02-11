@@ -3,6 +3,8 @@ let mediaRecorder = null;
 let audioChunks = [];
 let isRecording = false;
 let history = [];
+let chosenMimeType = 'audio/webm';
+let chosenExt = 'webm';
 
 // DOM elements
 const recordBtn = document.getElementById('recordBtn');
@@ -32,13 +34,21 @@ async function toggleRecording() {
 async function startRecording() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    
-    mediaRecorder = new MediaRecorder(stream, {
-      mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : 'audio/webm'
-    });
-    
+
+    // Pick the best supported mime type and extension
+    const preferredTypes = [
+      { type: 'audio/webm;codecs=opus', ext: 'webm' },
+      { type: 'audio/webm', ext: 'webm' },
+      { type: 'audio/ogg;codecs=opus', ext: 'ogg' },
+      { type: 'audio/mp4', ext: 'm4a' }
+    ];
+
+    const supported = preferredTypes.find(entry => MediaRecorder.isTypeSupported(entry.type));
+    chosenMimeType = supported ? supported.type : 'audio/webm';
+    chosenExt = supported ? supported.ext : 'webm';
+
+    mediaRecorder = new MediaRecorder(stream, { mimeType: chosenMimeType });
+
     audioChunks = [];
     
     mediaRecorder.ondataavailable = (event) => {
@@ -48,12 +58,12 @@ async function startRecording() {
     };
     
     mediaRecorder.onstop = () => {
-      const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+      const audioBlob = new Blob(audioChunks, { type: chosenMimeType });
       stream.getTracks().forEach(track => track.stop());
       sendAudio(audioBlob);
     };
     
-    mediaRecorder.start(250); // Collect data every 250ms
+    mediaRecorder.start(); // Single blob on stop – avoids corrupt EBML header
     isRecording = true;
     
     // Update UI
@@ -94,7 +104,9 @@ function stopRecording() {
 // Send audio to server
 async function sendAudio(blob) {
   const formData = new FormData();
-  formData.append('audio', blob, 'recording.webm');
+  formData.append('audio', blob, `recording.${chosenExt}`);
+  formData.append('mimeType', chosenMimeType);
+  formData.append('ext', chosenExt);
   
   try {
     const response = await fetch('/transcribe', {
