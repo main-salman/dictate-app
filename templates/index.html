@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dictate</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="bg-gradient"></div>
+
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <div class="app-icon">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          <line x1="12" y1="19" x2="12" y2="23"/>
+          <line x1="8" y1="23" x2="16" y2="23"/>
+        </svg>
+      </div>
+      <h1>Dictate</h1>
+      <p class="subtitle">Press the button, speak, and your words appear</p>
+    </div>
+
+    <!-- Main Card -->
+    <div class="glass-card main-card">
+      <!-- Record Button -->
+      <div class="record-section">
+        <button id="recordBtn" class="record-btn" onclick="toggleRecording()">
+          <div class="record-btn-inner">
+            <svg id="micIcon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="23"/>
+              <line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+            <svg id="stopIcon" class="hidden" width="32" height="32" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="6" width="12" height="12" rx="2"/>
+            </svg>
+          </div>
+          <div class="pulse-ring" id="pulseRing"></div>
+        </button>
+        <p id="statusText" class="status-text">Tap to start recording</p>
+        <div id="waveform" class="waveform hidden">
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+        </div>
+      </div>
+
+      <!-- Result Area -->
+      <div id="resultSection" class="result-section hidden">
+        <div class="result-header">
+          <span class="result-label">Transcription</span>
+          <button id="copyBtn" class="copy-btn" onclick="copyText()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+            </svg>
+            <span id="copyBtnText">Copy</span>
+          </button>
+        </div>
+        <div id="resultText" class="result-text" contenteditable="true"></div>
+      </div>
+
+      <!-- Processing State -->
+      <div id="processingSection" class="processing-section hidden">
+        <div class="spinner"></div>
+        <p>Transcribing your speech...</p>
+      </div>
+    </div>
+
+    <!-- History Card -->
+    <div id="historyCard" class="glass-card history-card hidden">
+      <div class="history-header">
+        <span class="result-label">History</span>
+        <button class="clear-btn" onclick="clearHistory()">Clear</button>
+      </div>
+      <div id="historyList" class="history-list"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
