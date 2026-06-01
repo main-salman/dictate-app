@@ -50,22 +50,22 @@ async function startRecording() {
     mediaRecorder = new MediaRecorder(stream, { mimeType: chosenMimeType });
 
     audioChunks = [];
-    
+   
     mediaRecorder.ondataavailable = (event) => {
       if (event.data.size > 0) {
         audioChunks.push(event.data);
       }
     };
-    
+   
     mediaRecorder.onstop = () => {
       const audioBlob = new Blob(audioChunks, { type: chosenMimeType });
       stream.getTracks().forEach(track => track.stop());
       sendAudio(audioBlob);
     };
-    
+   
     mediaRecorder.start(); // Single blob on stop – avoids corrupt EBML header
     isRecording = true;
-    
+   
     // Update UI
     recordBtn.classList.add('recording');
     micIcon.classList.add('hidden');
@@ -75,7 +75,7 @@ async function startRecording() {
     statusText.classList.add('recording');
     waveform.classList.remove('hidden');
     processingSection.classList.add('hidden');
-    
+   
   } catch (err) {
     console.error('Microphone access denied:', err);
     statusText.textContent = 'Microphone access denied. Please allow access.';
@@ -88,7 +88,7 @@ function stopRecording() {
     mediaRecorder.stop();
   }
   isRecording = false;
-  
+ 
   // Update UI
   recordBtn.classList.remove('recording');
   micIcon.classList.remove('hidden');
@@ -107,30 +107,30 @@ async function sendAudio(blob) {
   formData.append('audio', blob, `recording.${chosenExt}`);
   formData.append('mimeType', chosenMimeType);
   formData.append('ext', chosenExt);
-  
+ 
   try {
     const response = await fetch('/transcribe', {
       method: 'POST',
       body: formData
     });
-    
+   
     const data = await response.json();
     processingSection.classList.add('hidden');
-    
+   
     if (data.error) {
       statusText.textContent = data.error;
       return;
     }
-    
+   
     if (data.text) {
       // Show result
       resultSection.classList.remove('hidden');
       resultText.textContent = data.text;
       statusText.textContent = 'Tap to start recording';
-      
+     
       // Auto-copy to clipboard
       copyToClipboard(data.text);
-      
+     
       // Add to history
       addToHistory(data.text);
     }
@@ -151,11 +151,11 @@ function copyText() {
 async function copyToClipboard(text) {
   try {
     await navigator.clipboard.writeText(text);
-    
+   
     // Animate copy button
     copyBtn.classList.add('copied');
     copyBtnText.textContent = 'Copied!';
-    
+   
     setTimeout(() => {
       copyBtn.classList.remove('copied');
       copyBtnText.textContent = 'Copy';
@@ -175,9 +175,9 @@ async function copyToClipboard(text) {
 function addToHistory(text) {
   const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   history.unshift({ text, time });
-  
+ 
   if (history.length > 50) history.pop();
-  
+ 
   renderHistory();
 }
 
@@ -186,7 +186,7 @@ function renderHistory() {
     historyCard.classList.add('hidden');
     return;
   }
-  
+ 
   historyCard.classList.remove('hidden');
   historyList.innerHTML = history.map((item, i) => `
     <div class="history-item">
@@ -221,4 +221,9 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     toggleRecording();
   }
+});
+
+// Always focus the record button when returning to the app window
+window.addEventListener('focus', () => {
+  recordBtn.focus();
 });
