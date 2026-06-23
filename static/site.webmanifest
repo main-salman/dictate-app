@@ -1,0 +1,14 @@
+{
+  "name": "Dictate",
+  "short_name": "Dictate",
+  "description": "Private, offline dictation with local AI refine.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f5f7",
+  "theme_color": "#0071e3",
+  "icons": [
+    { "src": "/static/icon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any" },
+    { "src": "/static/icon-192.png", "type": "image/png", "sizes": "192x192" },
+    { "src": "/static/icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "any maskable" }
+  ]
+}

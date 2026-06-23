@@ -1,0 +1,221 @@
+DICTATE APP — CHANGE HISTORY
+============================
+(Append-only. Never delete prior entries. Learn from past changes.)
+
+2026-06-23 — Add local AI "Refine" feature
+-------------------------------------------
+Goal: Make the app more useful by cleaning up grammar/quotes, structuring
+thoughts into bullet points, summarizing, and clarifying dictated text — all
+locally to preserve the app's offline privacy guarantee.
+
+Decisions (confirmed with user via 5 questions):
+- Runtime: Ollama (works the same offline on macOS + Windows; simple HTTP API
+  at http://localhost:11434). Chosen over llama.cpp/LM Studio for cross-platform
+  reliability. No new Python deps — backend uses stdlib urllib.
+- Model: medium/recent, local only. Default DICTATE_LLM_MODEL=llama3.1:8b,
+  overridable via env. Backend auto-falls back to an installed variant of the
+  same family, or the first installed model, if the default isn't present.
+- Modes: dropdown menu — Clean up / Bullet points / Summarize / Email-Formal.
+- Display: keep Original raw text; show Original/Refined toggle after refining.
+- History: store BOTH raw and refined; copy uses refined when present.
+
+Changes:
+- app.py: added /refine endpoint, OLLAMA_HOST/LLM_MODEL config, REFINE_MODES,
+  LLM_SYSTEM_PROMPT, _ollama_models()/_pick_model() helpers. Graceful errors
+  for unreachable Ollama (503) and no models installed (503).
+- templates/index.html: Refine button + mode menu, Original/Refined toggle,
+  refine status/spinner row inside the result section.
+- static/app.js: refine state (currentRaw/currentRefined/currentView), refine
+  menu open/close (+ outside-click & Escape), refineText(mode), setView(),
+  copyText copies active view, history items now {raw, refined, time}.
+- static/style.css: styles for refine button/menu, view toggle, refine status
+  spinner, history "Refined" badge; result-text now white-space:pre-wrap so
+  bullet/newline output renders correctly.
+- run.sh: non-fatal Ollama detection + guidance to pull the model.
+- README.md: documented Refine feature, Ollama setup, env vars, troubleshooting.
+
+Notes / learnings for next time:
+- Ollama was NOT installed on this machine at build time; feature degrades
+  gracefully with clear in-app messages instead of failing silently.
+- Refine always runs from the ORIGINAL transcript (currentRaw), not the
+  currently displayed text, so re-refining in a different mode stays accurate.
+- Kept everything offline + simple; no extra dependencies added.
+
+2026-06-23 — Add double-clickable launchers
+-------------------------------------------
+- run.command (macOS): minimal wrapper that cd's to its dir and exec's run.sh,
+  so startup logic stays in ONE place (no duplication). Marked executable
+  (chmod +x) so Finder double-click works.
+- run.bat (Windows): mirrors run.sh logic — checks python/ffmpeg/whisper-cli on
+  PATH, downloads whisper model to %USERPROFILE%\whisper-models, optional Ollama
+  note, creates venv + installs flask, runs app.py. Note: on Windows ffmpeg and
+  whisper-cli must be on PATH (app.py already falls back to shutil.which).
+- README.md: documented macOS/Windows launchers in Installation + Dock setup.
+
+2026-06-23 — Auto-install/download models + first-run wait messaging
+--------------------------------------------------------------------
+Goal: app should automatically download/install the required model, and clearly
+tell the user (only on first run) that a download is happening so they wait.
+
+- run.sh: 
+  * Whisper model download now prints a clear "First-time setup ... ~150 MB ...
+    happens only once" message (only when the file is missing).
+  * Ollama: if missing, auto-install via Homebrew (brew install ollama) when brew
+    is available; otherwise print guidance. Then ensure the server is reachable
+    (start 'ollama serve &' + wait loop on /api/tags), and auto-pull the LLM
+    model with a one-time "downloading AI model (several GB), please wait"
+    message. All gated on existence so messages only show on first run.
+- run.bat: mirrored — winget install Ollama.Ollama if missing (note: may need a
+  re-run so PATH picks it up), start server via 'start /b ollama serve' + wait
+  loop using a flag var (avoided label-in-block fragility), auto 'ollama pull'.
+  First-run messages mirror run.sh.
+- README.md: documented automatic install/download + "first run takes longer"
+  callout; kept manual setup as a fallback.
+
+Learnings:
+- 'ollama pull' needs the server running; brew/winget installs don't always
+  auto-start it, so we start it ourselves and poll /api/tags before pulling.
+- Gating downloads on file/model existence is what makes the wait messaging
+  appear ONLY on first run — no extra state tracking needed.
+- In .bat, avoid goto/labels inside parenthesized blocks; use an 'if defined'
+  flag variable inside the for-loop instead.
+
+2026-06-23 — Fix "whisper-cli not found" error + full end-to-end test
+---------------------------------------------------------------------
+Reported error (terminal): "./run.command -> Error: whisper-cli not found".
+Cause: run.sh aborted (exit 1) when ffmpeg/whisper-cli were missing instead of
+installing them.
+
+Fix:
+- run.sh: ffmpeg and whisper-cli checks now auto-install via Homebrew
+  (brew install ffmpeg / whisper-cpp) when missing; only error if brew is
+  unavailable. whisper-cli check now also honors PATH (command -v) not just the
+  hardcoded /opt/homebrew path.
+- run.bat: ffmpeg auto-installs via winget if missing; whisper-cli keeps a clear
+  error + link (no reliable winget package for whisper.cpp on Windows).
+- README: updated launcher description for auto-install of ffmpeg/whisper-cli.
+
+Verified (macOS, this machine):
+- brew present, ffmpeg present, whisper-cli was MISSING (repro of the bug).
+- brew install whisper-cpp -> whisper-cli now at /opt/homebrew/bin/whisper-cli.
+- Speech model downloaded (~148 MB). venv + flask 3.1.3 installed.
+- App boots: GET / -> HTTP 200.
+- /transcribe with macOS `say` audio -> correct text returned (incl. "Um,").
+- /refine with Ollama absent -> graceful 503 error message (as designed).
+- Installed ollama via brew, started server, pulled llama3.1:8b (~4.9 GB).
+- /refine end-to-end:
+  * cleanup -> removed filler words (um/like/you know), fixed grammar/caps.
+  * bullets -> proper "- " list with newlines (renders via pre-wrap CSS).
+  * response includes mode + model ("llama3.1:8b").
+Learning: background processes (ollama serve / app.py) do NOT persist across
+separate shell invocations during testing — start server + run requests in the
+SAME command. Also: never `pkill -f "python3 app.py"` from the same shell; the
+pattern matches the running command line and kills the parent shell. Use $! PID.
+
+2026-06-23 — App-style window + auto-launch + Dock/Start-Menu shortcuts
+----------------------------------------------------------------------
+Decisions (user, 5 questions): browser=auto-detect Chrome>Brave>Edge>default
+(--app mode); packaging=update scripts AND create Dictate.app; lifecycle=stop
+server when window closes; reuse=if already running, just focus window; Windows
+parity=yes.
+
+Changes:
+- app.py: __main__ now honors DICTATE_DEBUG (default 1) and PORT (default 8080).
+  Launcher sets DICTATE_DEBUG=0 so Flask runs a SINGLE process (no reloader
+  child) => clean kill on window close.
+- run.sh launch section rewritten:
+  * detect_browser(): first of Chrome/Brave/Edge/Chromium .app binaries.
+  * If server already on :8080 -> reuse: open app window in background, exit.
+  * Else start server (DICTATE_DEBUG=0, bg), trap EXIT/INT/TERM -> kill server,
+    wait for readiness, then run the browser in --app mode with a dedicated
+    --user-data-dir (~/.dictate-app-browser) in the FOREGROUND so it blocks
+    until the window closes; on close, trap stops the server. No Chromium ->
+    fall back to `open URL` + wait.
+- run.bat: mirrored for Windows (Chrome/Edge/Brave detection, reuse check,
+  start /min server, wait loop, start /wait --app window, then taskkill the
+  PID listening on :8080).
+
+Initial mistake (corrected same session): I first created /Applications/
+Dictate.app directly with a HARDCODED project path. That is NOT in the repo and
+would not survive `git clone` or a moved folder. User asked exactly about this.
+Fix:
+- run.sh now self-bootstraps ~/Applications/Dictate.app on FIRST run via
+  setup_macos_app(), writing the executable with PROJECT_DIR resolved
+  dynamically ($(pwd) after cd to script dir). Executable is refreshed every
+  run (self-heals if repo moved); Info.plist/PkgInfo written once. lsregister
+  on first creation. Also chmod +x run.command/run.sh each run (self-heal exec
+  bits lost on clone).
+- run.bat self-bootstraps a Start Menu Dictate.lnk on first run via PowerShell
+  WScript.Shell, TargetPath=%~f0, WorkingDirectory=%~dp0 (dynamic, no hardcode).
+- Removed the stray hardcoded /Applications/Dictate.app.
+
+Verified (macOS): single-process server boots (HTTP 200); Chrome --app window
+opens as a trackable child (dedicated profile => separate instance => foreground
+block works); closing window + exit stops server (curl -> STOPPED). First-run
+bootstrap created ~/Applications/Dictate.app with the correct DYNAMIC path.
+
+Learnings:
+- Use a dedicated --user-data-dir so Chrome runs as its own instance you can
+  foreground/track; otherwise --app returns immediately into the user's
+  existing Chrome and you can't detect window close.
+- Clone-time setup isn't possible (clone can't execute code); do it on FIRST
+  RUN from repo-tracked scripts with dynamically-resolved paths. Never hardcode
+  machine-specific absolute paths into shipped artifacts.
+
+2026-06-23 — Fix "Audio conversion failed / EBML / End of file" error
+---------------------------------------------------------------------
+Symptom: ffmpeg error "invalid as first byte of an EBML number ... End of file"
+on transcribe. Root cause: the uploaded webm was empty/truncated (no real
+audio) — happens on a too-quick tap or the FIRST recording in a fresh browser
+profile (the new dedicated app-window profile) before the mic warms up / before
+permission is granted.
+
+Fix (defense in depth):
+- static/app.js: added recordingStartTime; in MediaRecorder.onstop, abort BEFORE
+  uploading if no chunks, blob < 1200 bytes, or duration < 400ms, showing a
+  friendly retry message ("Didn't catch that — hold the button, speak...").
+- app.py /transcribe:
+  * raw file < 1024 bytes -> 200 with "No audio captured..." (was: "Empty audio
+    file" only when exactly 0).
+  * ffmpeg failure whose stderr mentions ebml / end of file / invalid data ->
+    200 with friendly "Recording was empty or got cut off..."; logs the raw
+    ffmpeg detail via app.logger instead of dumping 800 chars to the user.
+
+Verified: tiny 8-byte webm -> "No audio captured..."; 3KB junk -> "Recording
+was empty or got cut off...". Client guard prevents most of these from ever
+reaching the server.
+
+Learning (testing): a STALE server on :8080 will answer requests while a newly
+started instance silently fails to bind — always free the port
+(lsof -ti tcp:8080 | xargs kill) before testing code changes, or you'll test
+old code. Confirmed this exact gotcha mid-fix.
+
+2026-06-23 — App icon / favicon (replace Chrome's generic "D")
+--------------------------------------------------------------
+Why: Chrome showed a generated "D" tile because the app had NO favicon. Added a
+real branded icon (reuses the in-app mic logo).
+
+Added:
+- static/icon.svg: 512 rounded gradient (#0071e3->#ac39d6) tile + white mic.
+- Rasterized PNGs via headless Chrome (render @1024 with --force-device-scale-
+  factor=2 + --default-background-color=00000000 for transparency), then sips
+  to 512/192/32/16; apple-touch-icon.png = 512 copy.
+- static/AppIcon.icns built via sips (iconset) + iconutil (for Dictate.app).
+- static/site.webmanifest (name/icons/theme/standalone).
+- index.html head: svg+png favicons, apple-touch-icon, manifest, theme-color.
+- run.sh setup_macos_app: now also installs Resources/AppIcon.icns, sets
+  CFBundleIconFile=AppIcon, always rewrites Info.plist, touch + lsregister to
+  refresh icon cache. Refreshed existing ~/Applications/Dictate.app too.
+
+Verified: /static/icon.svg (image/svg+xml), icon-512.png (image/png),
+site.webmanifest (application/manifest+json) all 200; head links present.
+
+Important nuance (communicated to user): launching `chrome --app=URL` from the
+CLI runs under Google Chrome, so the macOS DOCK icon for that window is Chrome's
+icon, not ours. Our icon now applies to: the page/tab favicon, any Chrome
+"Install/Create Shortcut" (will use the mic icon instead of "D"), and the
+Dictate.app Dock icon. A fully branded standalone window requires Chrome's
+"Install" (PWA) which now picks up our manifest icon.
+
+Learning: headless Chrome is a dependency-free way to rasterize SVG->PNG with
+transparency; combine with macOS sips/iconutil to build .icns without extra pkgs.

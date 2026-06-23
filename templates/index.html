@@ -4,6 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Dictate</title>
+  <link rel="icon" type="image/svg+xml" href="/static/icon.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/icon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/icon-16.png">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <link rel="manifest" href="/static/site.webmanifest">
+  <meta name="theme-color" content="#0071e3">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -58,15 +64,52 @@
       <div id="resultSection" class="result-section hidden">
         <div class="result-header">
           <span class="result-label">Transcription</span>
-          <button id="copyBtn" class="copy-btn" onclick="copyText()">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-            </svg>
-            <span id="copyBtnText">Copy</span>
-          </button>
+          <div class="result-actions">
+            <div class="refine-wrap">
+              <button id="refineBtn" class="refine-btn" onclick="toggleRefineMenu(event)" aria-haspopup="true" aria-expanded="false">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15.5l-1.9-4.6L5.5 9l4.6-1.4L12 3z"/>
+                  <path d="M19 14l.9 2.1L22 17l-2.1.9L19 20l-.9-2.1L16 17l2.1-.9L19 14z"/>
+                </svg>
+                <span id="refineBtnText">Refine</span>
+              </button>
+              <div id="refineMenu" class="refine-menu hidden" role="menu">
+                <button role="menuitem" onclick="refineText('cleanup')">
+                  <span class="refine-menu-title">Clean up</span>
+                  <span class="refine-menu-desc">Fix grammar, quotes & filler words</span>
+                </button>
+                <button role="menuitem" onclick="refineText('bullets')">
+                  <span class="refine-menu-title">Bullet points</span>
+                  <span class="refine-menu-desc">Structure thoughts into a list</span>
+                </button>
+                <button role="menuitem" onclick="refineText('summarize')">
+                  <span class="refine-menu-title">Summarize</span>
+                  <span class="refine-menu-desc">Condense to the key points</span>
+                </button>
+                <button role="menuitem" onclick="refineText('email')">
+                  <span class="refine-menu-title">Email / Formal</span>
+                  <span class="refine-menu-desc">Polished, professional rewrite</span>
+                </button>
+              </div>
+            </div>
+            <button id="copyBtn" class="copy-btn" onclick="copyText()">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+              <span id="copyBtnText">Copy</span>
+            </button>
+          </div>
+        </div>
+        <div id="viewToggle" class="view-toggle hidden">
+          <button id="viewOriginalBtn" class="view-toggle-btn active" onclick="setView('original')">Original</button>
+          <button id="viewRefinedBtn" class="view-toggle-btn" onclick="setView('refined')">Refined</button>
         </div>
         <div id="resultText" class="result-text" contenteditable="true"></div>
+        <div id="refineStatus" class="refine-status hidden">
+          <div class="refine-spinner"></div>
+          <span id="refineStatusText">Refining with local AI…</span>
+        </div>
       </div>
 
       <!-- Processing State -->

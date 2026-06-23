@@ -2,9 +2,17 @@
 let mediaRecorder = null;
 let audioChunks = [];
 let isRecording = false;
+let recordingStartTime = 0;
 let history = [];
 let chosenMimeType = 'audio/webm';
 let chosenExt = 'webm';
+
+// Refine state
+let currentRaw = '';
+let currentRefined = '';
+let currentView = 'original';
+let currentHistoryItem = null;
+let isRefining = false;
 
 // DOM elements
 const recordBtn = document.getElementById('recordBtn');
@@ -20,6 +28,13 @@ const historyCard = document.getElementById('historyCard');
 const historyList = document.getElementById('historyList');
 const copyBtn = document.getElementById('copyBtn');
 const copyBtnText = document.getElementById('copyBtnText');
+const refineBtn = document.getElementById('refineBtn');
+const refineMenu = document.getElementById('refineMenu');
+const viewToggle = document.getElementById('viewToggle');
+const viewOriginalBtn = document.getElementById('viewOriginalBtn');
+const viewRefinedBtn = document.getElementById('viewRefinedBtn');
+const refineStatus = document.getElementById('refineStatus');
+const refineStatusText = document.getElementById('refineStatusText');
 
 // Toggle recording
 async function toggleRecording() {
@@ -60,11 +75,24 @@ async function startRecording() {
     mediaRecorder.onstop = () => {
       const audioBlob = new Blob(audioChunks, { type: chosenMimeType });
       stream.getTracks().forEach(track => track.stop());
+
+      // Guard against empty/truncated recordings (e.g. a too-quick tap, or the
+      // first recording in a fresh browser profile before the mic warms up).
+      // These produce a tiny webm with no audio that ffmpeg can't decode.
+      const tooShort = (Date.now() - recordingStartTime) < 400;
+      if (audioChunks.length === 0 || audioBlob.size < 1200 || tooShort) {
+        processingSection.classList.add('hidden');
+        resultSection.classList.add('hidden');
+        statusText.textContent = "Didn't catch that — hold the button, speak, then tap to stop.";
+        return;
+      }
+
       sendAudio(audioBlob);
     };
    
     mediaRecorder.start(); // Single blob on stop – avoids corrupt EBML header
     isRecording = true;
+    recordingStartTime = Date.now();
    
     // Update UI
     recordBtn.classList.add('recording');
@@ -123,6 +151,13 @@ async function sendAudio(blob) {
     }
    
     if (data.text) {
+      // Reset refine state for the new transcription
+      currentRaw = data.text;
+      currentRefined = '';
+      currentView = 'original';
+      viewToggle.classList.add('hidden');
+      hideRefineMenu();
+
       // Show result
       resultSection.classList.remove('hidden');
       resultText.textContent = data.text;
@@ -132,7 +167,7 @@ async function sendAudio(blob) {
       copyToClipboard(data.text);
      
       // Add to history
-      addToHistory(data.text);
+      currentHistoryItem = addToHistory(data.text);
     }
   } catch (err) {
     console.error('Transcription error:', err);
@@ -141,10 +176,95 @@ async function sendAudio(blob) {
   }
 }
 
-// Copy current result
+// Copy current result (whatever view is showing, including manual edits)
 function copyText() {
   const text = resultText.textContent || resultText.innerText;
   copyToClipboard(text);
+}
+
+// Refine menu toggle
+function toggleRefineMenu(event) {
+  if (event) event.stopPropagation();
+  if (refineMenu.classList.contains('hidden')) {
+    refineMenu.classList.remove('hidden');
+    refineBtn.setAttribute('aria-expanded', 'true');
+  } else {
+    hideRefineMenu();
+  }
+}
+
+function hideRefineMenu() {
+  refineMenu.classList.add('hidden');
+  refineBtn.setAttribute('aria-expanded', 'false');
+}
+
+// Refine the current transcription with the local LLM
+async function refineText(mode) {
+  hideRefineMenu();
+  if (isRefining) return;
+
+  // Always refine from the original transcription text
+  const source = currentRaw.trim();
+  if (!source) return;
+
+  isRefining = true;
+  refineBtn.disabled = true;
+  refineStatus.classList.remove('hidden');
+  refineStatusText.textContent = 'Refining with local AI…';
+
+  try {
+    const response = await fetch('/refine', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: source, mode })
+    });
+    const data = await response.json();
+
+    if (data.error) {
+      refineStatusText.textContent = data.error;
+      refineStatus.classList.add('error');
+      setTimeout(() => {
+        refineStatus.classList.add('hidden');
+        refineStatus.classList.remove('error');
+      }, 6000);
+      return;
+    }
+
+    currentRefined = data.refined;
+    if (currentHistoryItem) {
+      currentHistoryItem.refined = data.refined;
+      renderHistory();
+    }
+
+    refineStatus.classList.add('hidden');
+    viewToggle.classList.remove('hidden');
+    setView('refined');
+  } catch (err) {
+    console.error('Refine error:', err);
+    refineStatusText.textContent = 'Error: Could not reach the refine service';
+    refineStatus.classList.add('error');
+    setTimeout(() => {
+      refineStatus.classList.add('hidden');
+      refineStatus.classList.remove('error');
+    }, 6000);
+  } finally {
+    isRefining = false;
+    refineBtn.disabled = false;
+  }
+}
+
+// Switch between the original transcription and the refined version
+function setView(view) {
+  currentView = view;
+  if (view === 'refined') {
+    resultText.textContent = currentRefined;
+    viewRefinedBtn.classList.add('active');
+    viewOriginalBtn.classList.remove('active');
+  } else {
+    resultText.textContent = currentRaw;
+    viewOriginalBtn.classList.add('active');
+    viewRefinedBtn.classList.remove('active');
+  }
 }
 
 // Copy to clipboard helper
@@ -174,11 +294,13 @@ async function copyToClipboard(text) {
 // History management
 function addToHistory(text) {
   const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  history.unshift({ text, time });
+  const item = { raw: text, refined: '', time };
+  history.unshift(item);
  
   if (history.length > 50) history.pop();
  
   renderHistory();
+  return item;
 }
 
 function renderHistory() {
@@ -188,19 +310,23 @@ function renderHistory() {
   }
  
   historyCard.classList.remove('hidden');
-  historyList.innerHTML = history.map((item, i) => `
+  historyList.innerHTML = history.map((item, i) => {
+    const display = item.refined || item.raw;
+    const badge = item.refined ? '<span class="history-badge">Refined</span>' : '';
+    return `
     <div class="history-item">
-      <div>
-        <div class="history-item-text">${escapeHtml(item.text)}</div>
-        <div class="history-item-time">${item.time}</div>
+      <div class="history-item-main">
+        <div class="history-item-text">${escapeHtml(display)}</div>
+        <div class="history-item-meta">${badge}<span class="history-item-time">${item.time}</span></div>
       </div>
       <button class="history-item-copy" onclick="copyHistoryItem(${i})">Copy</button>
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
 }
 
 function copyHistoryItem(index) {
-  copyToClipboard(history[index].text);
+  const item = history[index];
+  copyToClipboard(item.refined || item.raw);
 }
 
 function clearHistory() {
@@ -215,11 +341,22 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+// Close the refine menu when clicking elsewhere
+document.addEventListener('click', (e) => {
+  if (!refineMenu.classList.contains('hidden') &&
+      !e.target.closest('.refine-wrap')) {
+    hideRefineMenu();
+  }
+});
+
 // Keyboard shortcut: Option + . to toggle recording
 document.addEventListener('keydown', (e) => {
   if (e.altKey && e.key === '.') {
     e.preventDefault();
     toggleRecording();
+  }
+  if (e.key === 'Escape') {
+    hideRefineMenu();
   }
 });
 
