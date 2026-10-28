@@ -2,6 +2,8 @@
 let mediaRecorder = null;
 let audioChunks = [];
 let isRecording = false;
+let isStartingRecording = false;
+let isProcessing = false;
 let recordingStartTime = 0;
 let history = [];
 let chosenMimeType = 'audio/webm';
@@ -13,6 +15,15 @@ let currentRefined = '';
 let currentView = 'original';
 let currentHistoryItem = null;
 let isRefining = false;
+
+// Clipboard & focus state
+let copyTimeout = null;
+let editSyncTimeout = null;
+let pendingClipboardText = '';
+let isPointerDown = false;
+const clientId = (window.crypto && window.crypto.randomUUID)
+  ? window.crypto.randomUUID()
+  : `client_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
 // DOM elements
 const recordBtn = document.getElementById('recordBtn');
@@ -40,13 +51,15 @@ const refineStatusText = document.getElementById('refineStatusText');
 async function toggleRecording() {
   if (isRecording) {
     stopRecording();
-  } else {
+  } else if (!isStartingRecording && !isProcessing) {
     await startRecording();
   }
 }
 
 // Start recording
 async function startRecording() {
+  if (isRecording || isStartingRecording || isProcessing) return;
+  isStartingRecording = true;
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
@@ -81,8 +94,13 @@ async function startRecording() {
       // These produce a tiny webm with no audio that ffmpeg can't decode.
       const tooShort = (Date.now() - recordingStartTime) < 400;
       if (audioChunks.length === 0 || audioBlob.size < 1200 || tooShort) {
+        isProcessing = false;
         processingSection.classList.add('hidden');
-        resultSection.classList.add('hidden');
+        if (currentRaw) {
+          resultSection.classList.remove('hidden');
+        } else {
+          resultSection.classList.add('hidden');
+        }
         statusText.textContent = "Didn't catch that — hold the button, speak, then tap to stop.";
         return;
       }
@@ -107,15 +125,19 @@ async function startRecording() {
   } catch (err) {
     console.error('Microphone access denied:', err);
     statusText.textContent = 'Microphone access denied. Please allow access.';
+  } finally {
+    isStartingRecording = false;
   }
 }
 
 // Stop recording
 function stopRecording() {
+  if (!isRecording) return;
+  isRecording = false;
+  isProcessing = true;
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
     mediaRecorder.stop();
   }
-  isRecording = false;
  
   // Update UI
   recordBtn.classList.remove('recording');
@@ -147,6 +169,9 @@ async function sendAudio(blob) {
    
     if (data.error) {
       statusText.textContent = data.error;
+      if (currentRaw) {
+        resultSection.classList.remove('hidden');
+      }
       return;
     }
    
@@ -163,8 +188,8 @@ async function sendAudio(blob) {
       resultText.textContent = data.text;
       statusText.textContent = 'Tap to start recording';
      
-      // Auto-copy to clipboard
-      copyToClipboard(data.text);
+      // Auto-copy to clipboard (server already copied to OS clipboard via pbcopy)
+      copyToClipboard(data.text, { serverCopied: Boolean(data.copied) });
      
       // Add to history
       currentHistoryItem = addToHistory(data.text);
@@ -172,14 +197,26 @@ async function sendAudio(blob) {
   } catch (err) {
     console.error('Transcription error:', err);
     processingSection.classList.add('hidden');
+    if (currentRaw) {
+      resultSection.classList.remove('hidden');
+    }
     statusText.textContent = 'Error: Could not connect to server';
+  } finally {
+    isProcessing = false;
   }
+}
+
+// Read current text from the editable result box, preserving line breaks
+function getDisplayedResultText() {
+  return (resultText.innerText || resultText.textContent || '').trim();
 }
 
 // Copy current result (whatever view is showing, including manual edits)
 function copyText() {
-  const text = resultText.textContent || resultText.innerText;
-  copyToClipboard(text);
+  const text = getDisplayedResultText();
+  if (text) {
+    copyToClipboard(text);
+  }
 }
 
 // Refine menu toggle
@@ -238,7 +275,8 @@ async function refineText(mode) {
 
     refineStatus.classList.add('hidden');
     viewToggle.classList.remove('hidden');
-    setView('refined');
+    setView('refined', false);
+    copyToClipboard(data.refined, { serverCopied: Boolean(data.copied) });
   } catch (err) {
     console.error('Refine error:', err);
     refineStatusText.textContent = 'Error: Could not reach the refine service';
@@ -254,42 +292,146 @@ async function refineText(mode) {
 }
 
 // Switch between the original transcription and the refined version
-function setView(view) {
+function setView(view, shouldCopy = true) {
   currentView = view;
   if (view === 'refined') {
     resultText.textContent = currentRefined;
     viewRefinedBtn.classList.add('active');
     viewOriginalBtn.classList.remove('active');
+    if (shouldCopy && currentRefined) {
+      copyToClipboard(currentRefined);
+    }
   } else {
     resultText.textContent = currentRaw;
     viewOriginalBtn.classList.add('active');
     viewRefinedBtn.classList.remove('active');
+    if (shouldCopy && currentRaw) {
+      copyToClipboard(currentRaw);
+    }
   }
 }
 
-// Copy to clipboard helper
-async function copyToClipboard(text) {
-  try {
-    await navigator.clipboard.writeText(text);
-   
-    // Animate copy button
-    copyBtn.classList.add('copied');
-    copyBtnText.textContent = 'Copied!';
-   
+function showCopiedFeedback(historyBtn = null) {
+  copyBtn.classList.add('copied');
+  copyBtnText.textContent = 'Copied!';
+  if (copyTimeout) clearTimeout(copyTimeout);
+  copyTimeout = setTimeout(() => {
+    copyBtn.classList.remove('copied');
+    copyBtnText.textContent = 'Copy';
+  }, 2000);
+
+  if (historyBtn) {
+    historyBtn.textContent = 'Copied!';
     setTimeout(() => {
-      copyBtn.classList.remove('copied');
-      copyBtnText.textContent = 'Copy';
-    }, 2000);
-  } catch (err) {
-    // Fallback
-    const textarea = document.createElement('textarea');
-    textarea.value = text;
-    document.body.appendChild(textarea);
-    textarea.select();
-    document.execCommand('copy');
-    document.body.removeChild(textarea);
+      if (historyBtn.isConnected) {
+        historyBtn.textContent = 'Copy';
+      }
+    }, 1500);
   }
 }
+
+// Copy to clipboard helper — uses both browser Clipboard API and backend OS
+// clipboard (pbcopy on macOS) so copying always works even when switching
+// between the Dictate window and other applications.
+async function copyToClipboard(text, options = {}) {
+  if (!text) return;
+  const { serverCopied = false, quiet = false, historyBtn = null } = options;
+  let copiedOk = Boolean(serverCopied);
+
+  // 1. Try browser Clipboard API when window has focus
+  if (navigator.clipboard && document.hasFocus()) {
+    try {
+      await navigator.clipboard.writeText(text);
+      copiedOk = true;
+      pendingClipboardText = '';
+    } catch (_) {
+      pendingClipboardText = text;
+    }
+  } else {
+    pendingClipboardText = text;
+  }
+
+  // 2. Always ensure OS clipboard is updated via backend if not already done
+  if (!serverCopied) {
+    try {
+      const resp = await fetch('/copy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text })
+      });
+      if (resp.ok) {
+        const resData = await resp.json();
+        if (resData.copied) {
+          copiedOk = true;
+        }
+      }
+    } catch (_) {
+      // Ignore network errors and fall back to execCommand if needed
+    }
+  }
+
+  // 3. Last-resort DOM fallback only if neither succeeded and document is focused
+  if (!copiedOk && document.hasFocus()) {
+    try {
+      const prevActive = document.activeElement;
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      textarea.style.pointerEvents = 'none';
+      document.body.appendChild(textarea);
+      textarea.select();
+      copiedOk = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      if (prevActive && typeof prevActive.focus === 'function') {
+        prevActive.focus({ preventScroll: true });
+      }
+    } catch (_) {
+      // Ignore fallback errors
+    }
+  }
+
+  if (copiedOk && !quiet) {
+    showCopiedFeedback(historyBtn);
+  }
+}
+
+// Keep state and clipboard in sync when the user manually edits #resultText
+resultText.addEventListener('input', () => {
+  const edited = getDisplayedResultText();
+  if (currentView === 'refined') {
+    currentRefined = edited;
+    if (currentHistoryItem) {
+      currentHistoryItem.refined = edited;
+      renderHistory();
+    }
+  } else {
+    currentRaw = edited;
+    if (currentHistoryItem) {
+      currentHistoryItem.raw = edited;
+      renderHistory();
+    }
+  }
+
+  if (editSyncTimeout) clearTimeout(editSyncTimeout);
+  if (edited) {
+    editSyncTimeout = setTimeout(() => {
+      copyToClipboard(edited, { quiet: true });
+    }, 300);
+  }
+});
+
+resultText.addEventListener('blur', () => {
+  if (editSyncTimeout) {
+    clearTimeout(editSyncTimeout);
+    editSyncTimeout = null;
+  }
+  const edited = getDisplayedResultText();
+  if (edited) {
+    copyToClipboard(edited, { quiet: true });
+  }
+});
 
 // History management
 function addToHistory(text) {
@@ -319,14 +461,15 @@ function renderHistory() {
         <div class="history-item-text">${escapeHtml(display)}</div>
         <div class="history-item-meta">${badge}<span class="history-item-time">${item.time}</span></div>
       </div>
-      <button class="history-item-copy" onclick="copyHistoryItem(${i})">Copy</button>
+      <button class="history-item-copy" onclick="copyHistoryItem(${i}, this)">Copy</button>
     </div>`;
   }).join('');
 }
 
-function copyHistoryItem(index) {
+function copyHistoryItem(index, btnEl = null) {
   const item = history[index];
-  copyToClipboard(item.refined || item.raw);
+  if (!item) return;
+  copyToClipboard(item.refined || item.raw, { historyBtn: btnEl });
 }
 
 function clearHistory() {
@@ -349,18 +492,79 @@ document.addEventListener('click', (e) => {
   }
 });
 
-// Keyboard shortcut: Option + . to toggle recording
+// Keyboard shortcuts:
+// - Option + . to toggle recording (on macOS, Option+. produces '≥' with code 'Period')
+// - Cmd/Ctrl + C with no text selection copies the current transcription
 document.addEventListener('keydown', (e) => {
-  if (e.altKey && e.key === '.') {
+  if (e.altKey && (e.code === 'Period' || e.key === '.' || e.key === '≥')) {
     e.preventDefault();
     toggleRecording();
+    return;
+  }
+  if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'c') {
+    const selection = window.getSelection ? window.getSelection().toString() : '';
+    if (!selection && !resultSection.classList.contains('hidden')) {
+      const text = getDisplayedResultText();
+      if (text) {
+        e.preventDefault();
+        copyToClipboard(text);
+      }
+    }
   }
   if (e.key === 'Escape') {
     hideRefineMenu();
   }
 });
 
-// Always focus the record button when returning to the app window
+// Track pointer state so clicking a button (e.g. Copy / Refine) when switching
+// from another app doesn't have its focus or scroll position hijacked.
+window.addEventListener('pointerdown', () => { isPointerDown = true; }, true);
+window.addEventListener('pointerup', () => { isPointerDown = false; }, true);
+window.addEventListener('pointercancel', () => { isPointerDown = false; }, true);
+
+// Focus record button when returning to the app window via keyboard/App Switcher,
+// and flush any pending browser clipboard write.
 window.addEventListener('focus', () => {
-  recordBtn.focus();
+  notifyLifecycle('heartbeat');
+  if (pendingClipboardText && navigator.clipboard) {
+    const textToSync = pendingClipboardText;
+    pendingClipboardText = '';
+    navigator.clipboard.writeText(textToSync).catch(() => {});
+  }
+  if (!isPointerDown && document.activeElement !== resultText) {
+    recordBtn.focus({ preventScroll: true });
+  }
+});
+
+// Window lifecycle reporting so closing the app window on macOS stops the server
+function notifyLifecycle(action) {
+  const payload = JSON.stringify({ clientId });
+  if (action === 'close') {
+    if (navigator.sendBeacon) {
+      const blob = new Blob([payload], { type: 'application/json' });
+      navigator.sendBeacon('/lifecycle/close', blob);
+    } else {
+      fetch('/lifecycle/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+        keepalive: true
+      }).catch(() => {});
+    }
+    return;
+  }
+  fetch(`/lifecycle/${action}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: payload
+  }).catch(() => {});
+}
+
+notifyLifecycle('open');
+window.addEventListener('pagehide', () => notifyLifecycle('close'));
+window.addEventListener('beforeunload', () => notifyLifecycle('close'));
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    notifyLifecycle('heartbeat');
+  }
 });

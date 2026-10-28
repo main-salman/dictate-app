@@ -3,6 +3,8 @@
 # Dictate Web App Launcher
 # Usage: ./run.sh
 
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$PATH"
+
 cd "$(dirname "$0")"
 PROJECT_DIR="$(pwd)"
 
@@ -145,6 +147,9 @@ if [ ! -d "venv" ]; then
   pip install flask
 else
   source venv/bin/activate
+  if ! python3 -c "import flask" &>/dev/null; then
+    pip install flask
+  fi
 fi
 
 URL="http://localhost:8080"
@@ -166,46 +171,124 @@ detect_browser() {
 
 BROWSER_BIN="$(detect_browser)"
 
+# Terminate any lingering Chromium process for our dedicated profile and clear
+# stale singleton locks so a new launch never delegates to a windowless zombie
+# process (which would exit immediately and trigger the EXIT cleanup trap).
+kill_profile_browser() {
+  pkill -f -- "--user-data-dir=$BROWSER_PROFILE" >/dev/null 2>&1 || true
+  for _ in $(seq 1 20); do
+    pgrep -f -- "--user-data-dir=$BROWSER_PROFILE" >/dev/null 2>&1 || break
+    sleep 0.1
+  done
+  pkill -9 -f -- "--user-data-dir=$BROWSER_PROFILE" >/dev/null 2>&1 || true
+  rm -f "$BROWSER_PROFILE/SingletonLock" \
+        "$BROWSER_PROFILE/SingletonSocket" \
+        "$BROWSER_PROFILE/SingletonCookie" 2>/dev/null || true
+}
+
+# Prevent Chrome from showing a "Restore pages? Chrome didn't shut down
+# correctly" bubble after being stopped by cleanup().
+clean_browser_prefs() {
+  local prefs="$BROWSER_PROFILE/Default/Preferences"
+  if [ -f "$prefs" ]; then
+    sed -i '' 's/"exit_type":"Crashed"/"exit_type":"Normal"/g' "$prefs" 2>/dev/null || true
+  fi
+}
+
 open_app_window_bg() {
-  # Open the window without blocking (used when reusing a running server).
+  # Focus an existing profile window if running, otherwise open a new one.
   if [ -n "$BROWSER_BIN" ]; then
+    local bpid
+    bpid="$(pgrep -f -- "--user-data-dir=$BROWSER_PROFILE" | head -n 1)"
+    if [ -n "$bpid" ]; then
+      osascript -e "tell application \"System Events\" to set frontmost of first process whose unix id is $bpid to true" >/dev/null 2>&1 && return 0
+    fi
+    clean_browser_prefs
     "$BROWSER_BIN" --app="$URL" --user-data-dir="$BROWSER_PROFILE" \
-      --no-first-run --no-default-browser-check >/dev/null 2>&1 &
+      --no-first-run --no-default-browser-check \
+      --hide-crash-restore-bubble --disable-session-crashed-bubble >/dev/null 2>&1 &
   else
     open "$URL"
   fi
 }
 
-# If Dictate is already running, just open/focus the app window and exit.
-if curl -s "$URL" >/dev/null 2>&1; then
-  echo "Dictate is already running — opening the app window..."
-  open_app_window_bg
-  exit 0
+# If Dictate is already running with an active window, focus it and exit.
+# If a stale server is holding :8080 with no open window, stop it and start clean.
+if curl -sf "$URL" >/dev/null 2>&1; then
+  HEALTH_JSON="$(curl -sf "$URL/health" 2>/dev/null || true)"
+  if echo "$HEALTH_JSON" | grep -Eq '"clients": *[1-9]'; then
+    echo "Dictate is already running — focusing the app window..."
+    open_app_window_bg
+    exit 0
+  else
+    lsof -ti tcp:8080 | xargs kill >/dev/null 2>&1 || true
+    for _ in $(seq 1 20); do
+      lsof -ti tcp:8080 >/dev/null 2>&1 || break
+      sleep 0.1
+    done
+    lsof -ti tcp:8080 | xargs kill -9 >/dev/null 2>&1 || true
+  fi
 fi
+
+# Ensure no orphaned profile browser process is lingering before we launch.
+kill_profile_browser
+clean_browser_prefs
 
 # Start the server (we own its lifecycle). Debug off => single process.
 echo ""
 echo "  Starting Dictate at $URL ..."
-DICTATE_DEBUG=0 python3 app.py > /tmp/dictate.log 2>&1 &
+DICTATE_DEBUG=0 DICTATE_AUTO_SHUTDOWN=1 python3 app.py > /tmp/dictate.log 2>&1 &
 SERVER_PID=$!
 
-# Stop the server when this launcher exits (i.e. when the app window closes).
-cleanup() { kill "$SERVER_PID" >/dev/null 2>&1; }
-trap cleanup EXIT INT TERM
+# Stop both the server and the dedicated browser instance when this script exits.
+cleanup() {
+  trap - EXIT INT TERM HUP
+  if [ -n "${SERVER_PID:-}" ]; then
+    kill "$SERVER_PID" >/dev/null 2>&1 || true
+    wait "$SERVER_PID" 2>/dev/null || true
+  fi
+  kill_profile_browser
+}
+trap cleanup EXIT INT TERM HUP
 
 # Wait until the server is ready.
+SERVER_READY=0
 for _ in $(seq 1 40); do
-  curl -s "$URL" >/dev/null 2>&1 && break
+  if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+    break
+  fi
+  if curl -sf "$URL/health" >/dev/null 2>&1; then
+    SERVER_READY=1
+    break
+  fi
   sleep 0.25
 done
 
+if [ "$SERVER_READY" != "1" ]; then
+  echo "  Error: Dictate server failed to start. Log output:"
+  cat /tmp/dictate.log 2>/dev/null || true
+  exit 1
+fi
+
 if [ -n "$BROWSER_BIN" ]; then
   echo "  Dictate is running. Close the app window to quit."
-  # Foreground: blocks until the app window (dedicated profile) is closed.
   "$BROWSER_BIN" --app="$URL" --user-data-dir="$BROWSER_PROFILE" \
-    --no-first-run --no-default-browser-check >/dev/null 2>&1
+    --no-first-run --no-default-browser-check \
+    --hide-crash-restore-bubble --disable-session-crashed-bubble >/dev/null 2>&1 &
+  BROWSER_PID=$!
+
+  # Stay running as long as both the server (which stops via /lifecycle/close
+  # when the app window is closed) and the dedicated browser process are alive.
+  sleep 1
+  while kill -0 "$SERVER_PID" 2>/dev/null; do
+    if ! kill -0 "$BROWSER_PID" 2>/dev/null && \
+       ! pgrep -f -- "--user-data-dir=$BROWSER_PROFILE" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.5
+  done
 else
-  echo "  Opened in your default browser. Press Ctrl+C here to quit."
+  echo "  Opened in your default browser. Close the window or press Ctrl+C here to quit."
   open "$URL"
-  wait "$SERVER_PID"
+  wait "$SERVER_PID" 2>/dev/null || true
 fi

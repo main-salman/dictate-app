@@ -219,3 +219,65 @@ Dictate.app Dock icon. A fully branded standalone window requires Chrome's
 
 Learning: headless Chrome is a dependency-free way to rasterize SVG->PNG with
 transparency; combine with macOS sips/iconutil to build .icns without extra pkgs.
+
+
+2026-10-28 — Fix macOS launcher early-exit bug & clipboard copy on app switching
+--------------------------------------------------------------------------------
+Reported bugs (macOS):
+1. `run.command` sometimes did not work: instead of staying at "Dictate is
+   running. Close the app window to quit.", it immediately continued for a few
+   lines (`Saving session... ... [Process completed]`) and exited.
+2. Certain combinations of switching between the Dictate app window and other
+   applications resulted in dictated text not being copied to the clipboard.
+
+Root causes:
+1. On macOS, clicking the red close button (or Cmd+W) on a Chrome `--app`
+   window closes the window, NOT the Chrome application process for
+   `--user-data-dir=~/.dictate-app-browser`. Also, `cleanup()` in `run.sh` only
+   killed `$SERVER_PID` and never killed the `--user-data-dir` Chrome process.
+   On the next launch of `run.command`, `"$BROWSER_BIN" --app="$URL"
+   --user-data-dir="$BROWSER_PROFILE"` saw the still-running windowless Chrome
+   process, handed off to it, and exited in ~50ms — which caused `run.sh` to
+   exit immediately, fire `trap cleanup EXIT`, kill the newly started Flask
+   server, and print Terminal's session-close output.
+2. Browser `navigator.clipboard.writeText()` requires `document.hasFocus()` to
+   be true, and `document.execCommand('copy')` requires a synchronous user
+   gesture. When switching to another app while `/transcribe` (or `/refine`) is
+   still running, the Dictate window is unfocused when the response arrives, so
+   both `navigator.clipboard.writeText()` and `execCommand('copy')` fail.
+   Additionally, `window.addEventListener('focus', () => recordBtn.focus())`
+   stole focus/scrolled during `mousedown` when clicking buttons (`Copy`,
+   `Refine`, etc.) in an unfocused Dictate window.
+
+Fixes:
+- `app.py`:
+  * Added `copy_to_system_clipboard()` using `/usr/bin/pbcopy` on macOS (and
+    `clip` on Windows) so clipboard writes happen directly at the OS level
+    regardless of browser focus or user activation.
+  * `/transcribe` and `/refine` now copy their output to the OS clipboard
+    immediately on completion; added `POST /copy` for manual/UI copies.
+  * Added `/health` and `/lifecycle/{open,heartbeat,close}` endpoints so
+    closing the Dictate app window (red X / Cmd+W) cleanly shuts down the
+    server after a 1.5s grace period (ignoring page reloads).
+  * Filtered Whisper silence hallucinations (e.g. `(blank audio)`, `(silence)`).
+  * Added `/opt/homebrew/bin`, `/opt/homebrew/sbin`, `/usr/local/bin` to PATH.
+- `run.sh`:
+  * Exported Homebrew paths at startup so Finder/Dock launches always find
+    `brew`, `ffmpeg`, `whisper-cli`, and `ollama`.
+  * Added `kill_profile_browser()` and `clean_browser_prefs()` before launch and
+    in `cleanup()` (trapping `EXIT INT TERM HUP`), removing stale singleton
+    locks and preventing zombie `--user-data-dir` Chrome processes.
+  * Reuses/focuses an existing instance only when `/health` reports active open
+    client windows; otherwise cleans up stale processes on `:8080`.
+- `static/app.js`:
+  * `copyToClipboard()` uses both `navigator.clipboard.writeText()` (or queues
+    for next focus) and `POST /copy` (backend `pbcopy`), and shows `Copied!`
+    feedback reliably.
+  * Auto-copies refined output, view toggles (`Original`/`Refined`), and manual
+    edits in `#resultText` (`contenteditable`).
+  * Prevented `window` `focus` handler from hijacking focus during pointer clicks
+    or when editing `#resultText`.
+  * Fixed `Option + .` shortcut on macOS (where `e.key` is `'≥'`, `e.code` is
+    `'Period'`) and added `Cmd/Ctrl + C` shortcut when no text is selected.
+  * Preserved previous transcription display when a recording is too short or
+    fails, and guarded against concurrent `startRecording()` calls.
